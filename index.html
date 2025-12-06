@@ -11,13 +11,22 @@
     header{background:#07080a;color:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between}
     #panel{width:380px;max-width:40%;background:#071020;color:#dfeff7;padding:12px;overflow:auto}
     label{display:block;margin:8px 0 4px;font-size:13px}
-    input,select,button{width:100%;padding:8px;margin-bottom:6px;border-radius:8px;border:1px solid #19232b;background:#071420;color:#dfeff7}
+    input,select,button{width:100%;padding:10px;margin-bottom:8px;border-radius:10px;border:1px solid #19232b;background:#071420;color:#dfeff7;font-size:14px}
+    button.small,input.small{width:auto;padding:8px}
     .row{display:flex;gap:8px}
     .control{margin-bottom:10px}
     .storm-item{background:#06121a;border:1px solid #213039;padding:10px;border-radius:8px;margin-bottom:8px}
-    .small{width:auto;padding:6px}
     footer{background:#041018;color:#8aa0b3;padding:8px 12px;font-size:13px}
-    @media (max-width:900px){#panel{width:100%;max-width:none;position:absolute;bottom:0;left:0;right:0;height:46%;z-index:100}} 
+    .muted{font-size:12px;color:#9bb0c8}
+    .action-row{display:flex;gap:8px;flex-wrap:wrap}
+    @media (max-width:900px){
+      #panel{width:100%;max-width:none;position:absolute;bottom:0;left:0;right:0;height:52%;z-index:100;border-top-left-radius:12px;border-top-right-radius:12px;padding:14px}
+      input,button,select{padding:12px;font-size:16px}
+    }
+    /* touch-friendly hit targets */
+    @media (pointer:coarse){
+      input,button,select{padding:14px;font-size:17px}
+    }
   </style>
 </head>
 <body>
@@ -35,15 +44,32 @@
         </div>
         <div class="control"><label for="name">Nome do Evento</label><input id="name" value="markoFURA_01" /></div>
         <div class="row"><div style="flex:1"><label for="radius">Raio (km)</label><input id="radius" type="number" value="120" /></div><div style="width:120px"><label for="speed">Velocidade (km/h)</label><input id="speed" type="number" value="160" /></div></div>
+
         <div class="control">
           <label>Rota: clique no mapa para adicionar pontos. Clique em "Finalizar Rota" quando terminar.</label>
           <div class="row"><button id="startRoute">Iniciar Rota</button><button id="finishRoute" class="small">Finalizar Rota</button></div>
         </div>
+
         <div class="control"><div class="row"><button id="createStorm">Criar Evento</button><button id="startNow" class="small">Iniciar Agora</button></div></div>
 
         <div class="control">
+          <label>Localizar / Ir para cidade ou coordenadas</label>
+          <input id="cityName" placeholder="Digite o nome da cidade (ex: São Paulo)" />
+          <div class="action-row">
+            <button id="goCity">Ir para cidade</button>
+            <button id="useMyLoc" class="small">Usar minha localização</button>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input id="latManual" placeholder="Latitude" class="small" style="flex:1" />
+            <input id="lngManual" placeholder="Longitude" class="small" style="flex:1" />
+          </div>
+          <div class="action-row" style="margin-top:6px"><button id="goCoords" class="small">Ir para coords</button><label style="display:flex;align-items:center;gap:8px;margin-left:6px"><input type="checkbox" id="useAsStart" /> Usar como início de rota</label></div>
+          <div class="muted">Ao localizar uma cidade você pode optar por usá-la como ponto inicial da rota.</div>
+        </div>
+
+        <div class="control">
           <label>Estimativas Automáticas (padrões aplicados por zoom)</label>
-          <div style="font-size:12px;color:#9bb0c8">Você pode ajustar os valores abaixo antes de iniciar para afinar os resultados.</div>
+          <div class="muted">Você pode ajustar os valores abaixo antes de iniciar para afinar os resultados.</div>
           <label>População (pessoas / km²) - urbano / suburb / rural</label>
           <div class="row"><input id="popUrban" type="number" value="3000" placeholder="urbano" /><input id="popSub" type="number" value="800" placeholder="sub" /><input id="popRural" type="number" value="50" placeholder="rural" /></div>
           <label>Casas (unidades / km²)</label>
@@ -54,6 +80,12 @@
           <input id="animalsDensity" type="number" value="40" />
           <label>Multiplicador de fatalidade (0.0 - 2.0)</label>
           <input id="fatalityMult" type="number" step="0.1" value="1.0" />
+        </div>
+
+        <div class="control">
+          <label>Som</label>
+          <div style="display:flex;gap:8px;align-items:center"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="enableSound" checked /> Ativar som</label><button id="testSound" class="small">Testar</button></div>
+          <div class="muted">Som gerado localmente via Web Audio (nenhum arquivo externo necessário).</div>
         </div>
 
         <div class="control">
@@ -82,6 +114,12 @@
 
     let drawingRoute=false; let currentRoute=[]; let routePolyline=null; let storms=[];
 
+    // audio context
+    const AudioCtx = (window.AudioContext||window.webkitAudioContext);
+    let audioCtx = null;
+    function ensureAudio(){ if(!audioCtx){ try{ audioCtx = new AudioCtx(); }catch(e){ console.warn('AudioContext não disponível',e); } } }
+    function playBeep(freq=440,duration=0.12, type='sine'){ if(!document.getElementById('enableSound').checked) return; ensureAudio(); if(!audioCtx) return; const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.type = type; o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination); g.gain.setValueAtTime(0.0001,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.2,audioCtx.currentTime+0.01); o.start(); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+duration); o.stop(audioCtx.currentTime+duration+0.02); }
+
     // UI refs
     const startRouteBtn=document.getElementById('startRoute');
     const finishRouteBtn=document.getElementById('finishRoute');
@@ -90,6 +128,16 @@
     const impactSummary=document.getElementById('impactSummary');
     const exportReport=document.getElementById('exportReport');
     const clearImpacts=document.getElementById('clearImpacts');
+
+    const goCityBtn=document.getElementById('goCity');
+    const cityInput=document.getElementById('cityName');
+    const useMyLocBtn=document.getElementById('useMyLoc');
+    const latManual=document.getElementById('latManual');
+    const lngManual=document.getElementById('lngManual');
+    const goCoordsBtn=document.getElementById('goCoords');
+    const useAsStart=document.getElementById('useAsStart');
+    const enableSound=document.getElementById('enableSound');
+    const testSound=document.getElementById('testSound');
 
     startRouteBtn.onclick=()=>{ drawingRoute=true; currentRoute=[]; if(routePolyline){routeLayer.removeLayer(routePolyline); routePolyline=null} alert('Modo desenho ativado: clique no mapa para adicionar pontos.'); }
     finishRouteBtn.onclick=()=>{ drawingRoute=false; if(currentRoute.length>1){ routePolyline=L.polyline(currentRoute,{color:'#ffd54d',weight:3}).addTo(routeLayer); map.fitBounds(routePolyline.getBounds(),{padding:[30,30]}); } else alert('Rota invalida: nada desenhado'); }
@@ -103,11 +151,12 @@
 
     startNowBtn.onclick=()=>{ const s=storms.find(x=>x.status==='idle'); if(!s){ alert('Sem eventos prontos'); return } startStorm(s.id); }
 
-    function startStorm(id){ const s=storms.find(x=>x.id===id); if(!s) return; if(!s.route||s.route.length<2){ alert('Rota invalida'); return } s.status='running'; const icon=L.divIcon({className:'storm-icon',html:`<div style="padding:8px;border-radius:50%;background:rgba(200,50,10,0.95);color:white">${s.mode=='furacao'?'F':'T'}</div>`,iconSize:[42,42]}); s.marker=L.marker(s.route[0],{icon:icon}).addTo(stormsLayer); animateAlongRoute(s); }
+    function startStorm(id){ const s=storms.find(x=>x.id===id); if(!s) return; if(!s.route||s.route.length<2){ alert('Rota invalida'); return } s.status='running'; const icon=L.divIcon({className:'storm-icon',html:`<div style="padding:8px;border-radius:50%;background:rgba(200,50,10,0.95);color:white">${s.mode=='furacao'?'F':'T'}</div>`,iconSize:[42,42]}); s.marker=L.marker(s.route[0],{icon:icon}).addTo(stormsLayer); playBeep(220,0.18,'sawtooth'); animateAlongRoute(s); }
 
     function animateAlongRoute(s){ const line=turf.lineString(s.route.map(p=>[p[1],p[0]])); const lengthKm=turf.length(line,{units:'kilometers'}); const hours=lengthKm/(s.speed||120); const totalSeconds=Math.max(8,Math.floor(hours*3600)); const duration= Math.max(10, Math.floor(totalSeconds)); const steps=Math.max(200,Math.floor(duration*20)); const pts=[]; for(let i=0;i<=steps;i++){ const p=turf.along(line,(i/steps)*lengthKm,{units:'kilometers'}); pts.push([p.geometry.coordinates[1],p.geometry.coordinates[0]]); }
       let i=0; let running=true; const anim={cancel:()=>{running=false}}; s.anim=anim;
-      function step(){ if(!running) return; const idx=Math.min(i,pts.length-1); if(s.marker) s.marker.setLatLng(pts[idx]); if(i%3===0){ const impact=estimateImpactAt(pts[idx], s); s.impacts.push(impact); drawImpactMarker(impact); } i++; if(i<pts.length) requestAnimationFrame(step); else { s.status='finished'; if(s.marker){stormsLayer.removeLayer(s.marker); s.marker=null} summarizeStorm(s); } }
+      function step(){ if(!running) return; const idx=Math.min(i,pts.length-1); if(s.marker) s.marker.setLatLng(pts[idx]); if(i%3===0){ const impact=estimateImpactAt(pts[idx], s); s.impacts.push(impact); drawImpactMarker(impact); playBeep(600,0.06,'sine'); }
+      i++; if(i<pts.length) requestAnimationFrame(step); else { s.status='finished'; if(s.marker){stormsLayer.removeLayer(s.marker); s.marker=null} playBeep(120,0.28,'triangle'); summarizeStorm(s); } }
       requestAnimationFrame(step);
     }
 
@@ -162,15 +211,7 @@
 
     function summarizeStorm(s){ // agrega impactos e apresenta no painel
       const total = s.impacts.reduce((acc,imp)=>{ acc.exposedPeople += imp.exposedPeople; acc.deaths += imp.deaths; acc.housesDestroyed += imp.housesDestroyed; acc.treesDestroyed += imp.treesDestroyed; acc.animalsKilled += imp.animalsKilled; return acc; }, {exposedPeople:0,deaths:0,housesDestroyed:0,treesDestroyed:0,animalsKilled:0});
-      const txt = `Relatorio - ${s.name} (tipo: ${s.mode})
-
-Pessoas expostas (estim): ${total.exposedPeople}
-Mortes estimadas: ${total.deaths}
-Casas destruídas: ${total.housesDestroyed}
-Arvores destruídas: ${total.treesDestroyed}
-Animais mortos: ${total.animalsKilled}
-
-Numero de pontos analisados: ${s.impacts.length}`;
+      const txt = `Relatorio - ${s.name} (tipo: ${s.mode})\n\nPessoas expostas (estim): ${total.exposedPeople}\nMortes estimadas: ${total.deaths}\nCasas destruídas: ${total.housesDestroyed}\nArvores destruídas: ${total.treesDestroyed}\nAnimais mortos: ${total.animalsKilled}\n\nNumero de pontos analisados: ${s.impacts.length}`;
       impactSummary.textContent = txt;
     }
 
@@ -178,6 +219,24 @@ Numero de pontos analisados: ${s.impacts.length}`;
       if(storms.length===0){ alert('Nenhum evento para exportar'); return } const s=storms[storms.length-1]; const report={name:s.name,mode:s.mode,created:Date.now(),impacts:s.impacts}; const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='markoFURA_report_'+Date.now()+'.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
 
     clearImpacts.onclick=()=>{ damageLayer.clearLayers(); impactSummary.textContent=''; }
+
+    testSound.onclick=()=>{ playBeep(660,0.08); setTimeout(()=>playBeep(880,0.06),120); }
+
+    // geocoding via Nominatim (OpenStreetMap)
+    async function geocodeCity(name){ try{ const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(name)}&limit=5&addressdetails=1`; const res = await fetch(url, {headers:{'Accept':'application/json'}}); const data = await res.json(); return data; }catch(e){ console.warn('geocode error',e); return null; } }
+
+    goCityBtn.onclick=async()=>{ const name = cityInput.value.trim(); if(!name) { alert('Digite o nome da cidade'); return } const results = await geocodeCity(name); if(!results||results.length===0){ alert('Nenhum resultado encontrado'); return } const first = results[0]; const lat=parseFloat(first.lat), lon=parseFloat(first.lon); map.setView([lat,lon],12); L.marker([lat,lon]).addTo(effectsLayer).bindPopup(`<b>${first.display_name}</b>`).openPopup(); if(useAsStart.checked){ // place single-point route starting here
+        currentRoute = [[lat,lon]]; if(routePolyline){routeLayer.removeLayer(routePolyline)} routePolyline = L.polyline(currentRoute,{color:'#ffd54d',weight:3}).addTo(routeLayer); }
+    }
+
+    useMyLocBtn.onclick=()=>{ if(!navigator.geolocation){ alert('Geolocalização não suportada no seu dispositivo'); return } navigator.geolocation.getCurrentPosition(pos=>{ const lat=pos.coords.latitude, lng=pos.coords.longitude; map.setView([lat,lng],13); L.circle([lat,lng],{radius:500,weight:1,fill:false}).addTo(effectsLayer); if(useAsStart.checked){ currentRoute = [[lat,lng]]; if(routePolyline){routeLayer.removeLayer(routePolyline)} routePolyline = L.polyline(currentRoute,{color:'#ffd54d',weight:3}).addTo(routeLayer); } }, err=>{ alert('Falha ao obter localização: '+err.message); }); }
+
+    goCoordsBtn.onclick=()=>{ const lat=parseFloat(latManual.value), lng=parseFloat(lngManual.value); if(isNaN(lat)||isNaN(lng)){ alert('Coords inválidas'); return } map.setView([lat,lng],12); L.marker([lat,lng]).addTo(effectsLayer); if(useAsStart.checked){ currentRoute = [[lat,lng]]; if(routePolyline){routeLayer.removeLayer(routePolyline)} routePolyline = L.polyline(currentRoute,{color:'#ffd54d',weight:3}).addTo(routeLayer); } }
+
+    // keep only a few markers in effectsLayer to avoid clutter
+    setInterval(()=>{ // clean old effects markers after some time
+      effectsLayer.eachLayer(l=>{ /* nothing for now, reserved for future cleanup rules */ });
+    },1000*60*3);
 
     // small sample to center map
     if(navigator.geolocation){ navigator.geolocation.getCurrentPosition(pos=>{ const lat=pos.coords.latitude, lng=pos.coords.longitude; map.setView([lat,lng],10); L.circle([lat,lng],{radius:500,weight:1,fill:false}).addTo(map); },()=>{}); }

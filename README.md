@@ -34,7 +34,7 @@
 <h2 align="center">🎮 Jogar Agora</h2>
 
 <div align="center">
-  <a href="./game.html">
+  <a href="https://markofura.simdif.com/abaixar.html">
     <img src="https://img.shields.io/badge/ABRIR%20O%20JOGO-RED?style=for-the-badge&logo=angular&logoColor=white" alt="Jogar"/>
   </a>
 </div>

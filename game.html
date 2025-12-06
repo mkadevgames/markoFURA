@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>markoFURA - Simulador de Furacoes e Tornados</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html,body,#map{height:100%;margin:0;padding:0;font-family:Inter,Arial,Helvetica,sans-serif}
+    #app{display:flex;flex-direction:column;height:100vh}
+    header{background:#07080a;color:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between}
+    #panel{width:380px;max-width:40%;background:#071020;color:#dfeff7;padding:12px;overflow:auto}
+    label{display:block;margin:8px 0 4px;font-size:13px}
+    input,select,button{width:100%;padding:8px;margin-bottom:6px;border-radius:8px;border:1px solid #19232b;background:#071420;color:#dfeff7}
+    .row{display:flex;gap:8px}
+    .control{margin-bottom:10px}
+    .storm-item{background:#06121a;border:1px solid #213039;padding:10px;border-radius:8px;margin-bottom:8px}
+    .small{width:auto;padding:6px}
+    footer{background:#041018;color:#8aa0b3;padding:8px 12px;font-size:13px}
+    @media (max-width:900px){#panel{width:100%;max-width:none;position:absolute;bottom:0;left:0;right:0;height:46%;z-index:100}} 
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="brand">markoFURA</div>
+      <div>Simulador - Impacto Humano e Ambiental</div>
+    </header>
+    <main style="display:flex;flex:1;min-height:0">
+      <div id="map" style="flex:1"></div>
+      <aside id="panel" role="region" aria-label="controles">
+        <div class="control">
+          <label for="mode">Tipo</label>
+          <select id="mode"><option value="furacao">FURACAO</option><option value="tornado">TORNADO</option><option value="tempestade">TEMPESTADE (raios)</option></select>
+        </div>
+        <div class="control"><label for="name">Nome do Evento</label><input id="name" value="markoFURA_01" /></div>
+        <div class="row"><div style="flex:1"><label for="radius">Raio (km)</label><input id="radius" type="number" value="120" /></div><div style="width:120px"><label for="speed">Velocidade (km/h)</label><input id="speed" type="number" value="160" /></div></div>
+        <div class="control">
+          <label>Rota: clique no mapa para adicionar pontos. Clique em "Finalizar Rota" quando terminar.</label>
+          <div class="row"><button id="startRoute">Iniciar Rota</button><button id="finishRoute" class="small">Finalizar Rota</button></div>
+        </div>
+        <div class="control"><div class="row"><button id="createStorm">Criar Evento</button><button id="startNow" class="small">Iniciar Agora</button></div></div>
+
+        <div class="control">
+          <label>Estimativas Automáticas (padrões aplicados por zoom)</label>
+          <div style="font-size:12px;color:#9bb0c8">Você pode ajustar os valores abaixo antes de iniciar para afinar os resultados.</div>
+          <label>População (pessoas / km²) - urbano / suburb / rural</label>
+          <div class="row"><input id="popUrban" type="number" value="3000" placeholder="urbano" /><input id="popSub" type="number" value="800" placeholder="sub" /><input id="popRural" type="number" value="50" placeholder="rural" /></div>
+          <label>Casas (unidades / km²)</label>
+          <input id="housesDensity" type="number" value="400" />
+          <label>Arvores (unidades / km²)</label>
+          <input id="treesDensity" type="number" value="800" />
+          <label>Animais domesticos/selvagens (unidades / km²)</label>
+          <input id="animalsDensity" type="number" value="40" />
+          <label>Multiplicador de fatalidade (0.0 - 2.0)</label>
+          <input id="fatalityMult" type="number" step="0.1" value="1.0" />
+        </div>
+
+        <div class="control">
+          <label>Resultados</label>
+          <div id="impactSummary" style="font-size:13px;color:#cfeaf6;max-height:240px;overflow:auto;padding:6px;background:#04121a;border-radius:6px"></div>
+          <div class="row"><button id="exportReport">Exportar Relatorio (JSON)</button><button id="clearImpacts" class="small">Limpar Marcacoes</button></div>
+        </div>
+
+        <div class="control"><label>Dicas</label><div style="font-size:13px;color:#9bb0c8">Desenhe a rota, clique Criar Evento e depois Iniciar. O simulador vai estimar pessoas, casas, arvores e animais afetados ao longo do rastro. Valores sao estimativas geradas localmente (ajuste os parametros se quiser).</div></div>
+      </aside>
+    </main>
+    <footer>markoFURA - ferramenta de simulacao. Resultados sao estimativas e nao substituem dados oficiais.</footer>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+  <script>
+    const map = L.map('map', {preferCanvas:true}).setView([0,0],2);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'ESRI'}).addTo(map);
+
+    const stormsLayer = L.layerGroup().addTo(map);
+    const damageLayer = L.layerGroup().addTo(map);
+    const routeLayer = L.layerGroup().addTo(map);
+    const effectsLayer = L.layerGroup().addTo(map);
+
+    let drawingRoute=false; let currentRoute=[]; let routePolyline=null; let storms=[];
+
+    // UI refs
+    const startRouteBtn=document.getElementById('startRoute');
+    const finishRouteBtn=document.getElementById('finishRoute');
+    const createStormBtn=document.getElementById('createStorm');
+    const startNowBtn=document.getElementById('startNow');
+    const impactSummary=document.getElementById('impactSummary');
+    const exportReport=document.getElementById('exportReport');
+    const clearImpacts=document.getElementById('clearImpacts');
+
+    startRouteBtn.onclick=()=>{ drawingRoute=true; currentRoute=[]; if(routePolyline){routeLayer.removeLayer(routePolyline); routePolyline=null} alert('Modo desenho ativado: clique no mapa para adicionar pontos.'); }
+    finishRouteBtn.onclick=()=>{ drawingRoute=false; if(currentRoute.length>1){ routePolyline=L.polyline(currentRoute,{color:'#ffd54d',weight:3}).addTo(routeLayer); map.fitBounds(routePolyline.getBounds(),{padding:[30,30]}); } else alert('Rota invalida: nada desenhado'); }
+    map.on('click', e=>{ if(drawingRoute){ currentRoute.push([e.latlng.lat,e.latlng.lng]); if(routePolyline){routeLayer.removeLayer(routePolyline)} routePolyline=L.polyline(currentRoute,{color:'#ffd54d',weight:3}).addTo(routeLayer); } });
+
+    createStormBtn.onclick=()=>{ if(!routePolyline){ alert('Desenhe uma rota antes'); return } const mode=document.getElementById('mode').value; const name=document.getElementById('name').value||('evt_'+Date.now()); const radius=parseFloat(document.getElementById('radius').value)||120; const speed=parseFloat(document.getElementById('speed').value)||150; const routeLatLngs=routePolyline.getLatLngs().map(p=>[p.lat,p.lng]); const storm=createStormObject({mode,name,radius,speed,route:routeLatLngs}); storms.push(storm); renderStormList(); routeLayer.clearLayers(); routePolyline=null; currentRoute=[]; }
+
+    function createStormObject(spec){ return { id:'s_'+(Math.random().toString(36).slice(2,9)), mode:spec.mode, name:spec.name, radius:spec.radius, speed:spec.speed, route:spec.route, status:'idle', marker:null, anim:null, impacts:[] } }
+
+    function renderStormList(){ /* simple update printed in console only - list not shown here to keep UI concise */ console.log('storms',storms); }
+
+    startNowBtn.onclick=()=>{ const s=storms.find(x=>x.status==='idle'); if(!s){ alert('Sem eventos prontos'); return } startStorm(s.id); }
+
+    function startStorm(id){ const s=storms.find(x=>x.id===id); if(!s) return; if(!s.route||s.route.length<2){ alert('Rota invalida'); return } s.status='running'; const icon=L.divIcon({className:'storm-icon',html:`<div style="padding:8px;border-radius:50%;background:rgba(200,50,10,0.95);color:white">${s.mode=='furacao'?'F':'T'}</div>`,iconSize:[42,42]}); s.marker=L.marker(s.route[0],{icon:icon}).addTo(stormsLayer); animateAlongRoute(s); }
+
+    function animateAlongRoute(s){ const line=turf.lineString(s.route.map(p=>[p[1],p[0]])); const lengthKm=turf.length(line,{units:'kilometers'}); const hours=lengthKm/(s.speed||120); const totalSeconds=Math.max(8,Math.floor(hours*3600)); const duration= Math.max(10, Math.floor(totalSeconds)); const steps=Math.max(200,Math.floor(duration*20)); const pts=[]; for(let i=0;i<=steps;i++){ const p=turf.along(line,(i/steps)*lengthKm,{units:'kilometers'}); pts.push([p.geometry.coordinates[1],p.geometry.coordinates[0]]); }
+      let i=0; let running=true; const anim={cancel:()=>{running=false}}; s.anim=anim;
+      function step(){ if(!running) return; const idx=Math.min(i,pts.length-1); if(s.marker) s.marker.setLatLng(pts[idx]); if(i%3===0){ const impact=estimateImpactAt(pts[idx], s); s.impacts.push(impact); drawImpactMarker(impact); } i++; if(i<pts.length) requestAnimationFrame(step); else { s.status='finished'; if(s.marker){stormsLayer.removeLayer(s.marker); s.marker=null} summarizeStorm(s); } }
+      requestAnimationFrame(step);
+    }
+
+    // heuristica por zoom: >=12 urbano, 8-11 suburb, <8 rural
+    function classifyByZoom(){ const z=map.getZoom(); if(z>=12) return 'urban'; if(z>=8) return 'suburban'; return 'rural'; }
+
+    function estimateImpactAt(latlng, s){ // latlng [lat,lng]
+      const radius_km = Math.max(0.5, s.radius * (0.08 + Math.random()*0.2)); // area influenced local
+      const area_km2 = Math.PI * radius_km * radius_km;
+      // read user densities
+      const popUrban = parseFloat(document.getElementById('popUrban').value)||3000;
+      const popSub = parseFloat(document.getElementById('popSub').value)||800;
+      const popRural = parseFloat(document.getElementById('popRural').value)||50;
+      const housesD = parseFloat(document.getElementById('housesDensity').value)||400;
+      const treesD = parseFloat(document.getElementById('treesDensity').value)||800;
+      const animalsD = parseFloat(document.getElementById('animalsDensity').value)||40;
+      const fatalityMult = parseFloat(document.getElementById('fatalityMult').value)||1.0;
+
+      // choose density by zoom
+      const zone = classifyByZoom(); let popD=popRural; if(zone==='urban') popD=popUrban; else if(zone==='suburban') popD=popSub;
+
+      // compute exposed counts
+      const exposedPeople = Math.round(area_km2 * popD);
+      const houses = Math.round(area_km2 * housesD);
+      const trees = Math.round(area_km2 * treesD);
+      const animals = Math.round(area_km2 * animalsD);
+
+      // destruction factor base on speed and mode
+      const speed = s.speed||120; let destructionFactor = 0.15; if(speed>=250) destructionFactor=0.95; else if(speed>=150) destructionFactor=0.7; else if(speed>=90) destructionFactor=0.35; else destructionFactor=0.12;
+      if(s.mode==='tornado') destructionFactor = Math.max(destructionFactor, 0.65 + Math.random()*0.25);
+      if(s.mode==='tempestade') destructionFactor = Math.min(destructionFactor, 0.35);
+
+      // fatalities: a fraction of exposedPeople * destructionFactor * fatalityMult * random
+      const fatalityRate = 0.01 + (destructionFactor * 0.05) * fatalityMult; // conservative formula
+      const deaths = Math.round(exposedPeople * fatalityRate * (0.6 + Math.random()*0.8));
+
+      // destroyed houses/trees/animals
+      const housesDestroyed = Math.round(houses * destructionFactor * (0.6 + Math.random()*0.8));
+      const treesDestroyed = Math.round(trees * destructionFactor * (0.6 + Math.random()*0.9));
+      const animalsKilled = Math.round(animals * destructionFactor * (0.4 + Math.random()*0.9));
+
+      return {latlng:latlng, radius_km:radius_km, area_km2:area_km2, zone:zone, exposedPeople, deaths, houses, housesDestroyed, trees, treesDestroyed, animals, animalsKilled, timestamp:Date.now()};
+    }
+
+    function drawImpactMarker(impact){ // draw circle + small popup with counts
+      const circle = L.circle(impact.latlng, {radius: impact.radius_km*1000, color:'#8b0000', weight:1, fillOpacity:0.25}).addTo(damageLayer);
+      const iconHtml = `<div style="background:rgba(0,0,0,0.6);color:#fff;padding:6px;border-radius:6px;font-size:12px;max-width:180px">P:${impact.exposedPeople} D:${impact.deaths}<br>H:${impact.housesDestroyed} A:${impact.animalsKilled} T:${impact.treesDestroyed}</div>`;
+      const marker = L.marker(impact.latlng, {icon:L.divIcon({className:'impact-icon',html:iconHtml})}).addTo(damageLayer);
+      // auto-remove after tempo (ajustavel)
+      setTimeout(()=>{ try{ damageLayer.removeLayer(circle); damageLayer.removeLayer(marker); } catch(e){} }, 1000*60*10);
+    }
+
+    function summarizeStorm(s){ // agrega impactos e apresenta no painel
+      const total = s.impacts.reduce((acc,imp)=>{ acc.exposedPeople += imp.exposedPeople; acc.deaths += imp.deaths; acc.housesDestroyed += imp.housesDestroyed; acc.treesDestroyed += imp.treesDestroyed; acc.animalsKilled += imp.animalsKilled; return acc; }, {exposedPeople:0,deaths:0,housesDestroyed:0,treesDestroyed:0,animalsKilled:0});
+      const txt = `Relatorio - ${s.name} (tipo: ${s.mode})
+
+Pessoas expostas (estim): ${total.exposedPeople}
+Mortes estimadas: ${total.deaths}
+Casas destruídas: ${total.housesDestroyed}
+Arvores destruídas: ${total.treesDestroyed}
+Animais mortos: ${total.animalsKilled}
+
+Numero de pontos analisados: ${s.impacts.length}`;
+      impactSummary.textContent = txt;
+    }
+
+    exportReport.onclick=()=>{ // export last storm report
+      if(storms.length===0){ alert('Nenhum evento para exportar'); return } const s=storms[storms.length-1]; const report={name:s.name,mode:s.mode,created:Date.now(),impacts:s.impacts}; const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='markoFURA_report_'+Date.now()+'.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
+
+    clearImpacts.onclick=()=>{ damageLayer.clearLayers(); impactSummary.textContent=''; }
+
+    // small sample to center map
+    if(navigator.geolocation){ navigator.geolocation.getCurrentPosition(pos=>{ const lat=pos.coords.latitude, lng=pos.coords.longitude; map.setView([lat,lng],10); L.circle([lat,lng],{radius:500,weight:1,fill:false}).addTo(map); },()=>{}); }
+
+    console.log('markoFURA: impacto humano e ambiental ativado. Ajuste parametros no painel e rode o evento.');
+  </script>
+</body>
+</html>
